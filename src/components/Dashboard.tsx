@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { useAuth } from '../contexts/AuthContext';
 import { supabase, Team, League, Match } from '../lib/supabase';
 import { Link } from 'react-router-dom';
@@ -11,27 +11,41 @@ export default function Dashboard() {
   const [upcomingMatches, setUpcomingMatches] = useState<Match[]>([]);
   const [stats, setStats] = useState({ rank: 0, predictions: 0 });
   const [loading, setLoading] = useState(true);
+  const dataFetched = useRef(false);
 
-  useEffect(() => { if (profile) fetchDashboardData(); }, [profile]);
+  useEffect(() => {
+    if (profile && !dataFetched.current) {
+      dataFetched.current = true;
+      fetchDashboardData();
+    }
+  }, [profile]);
 
   const fetchDashboardData = async () => {
     if (!profile) return;
     setLoading(true);
 
-    if (profile.favorite_team_id) {
-      const { data: team } = await supabase.from('teams').select('*').eq('id', profile.favorite_team_id).single();
-      setFavoriteTeam(team);
+    try {
+      // Run queries in parallel for speed
+      const [teamRes, memberRes, matchesRes, countRes, predRes] = await Promise.all([
+        profile.favorite_team_id
+          ? supabase.from('teams').select('*').eq('id', profile.favorite_team_id).single()
+          : Promise.resolve({ data: null }),
+        supabase.from('league_members').select('league_id, leagues(*)').eq('user_id', profile.id),
+        supabase.from('matches').select('*, team_a:teams!matches_team_a_id_fkey(*), team_b:teams!matches_team_b_id_fkey(*)').eq('status', 'scheduled').order('kickoff_time').limit(5),
+        supabase.from('profiles').select('*', { count: 'exact', head: true }),
+        supabase.from('predictions_match').select('id').eq('user_id', profile.id)
+      ]);
+
+      setFavoriteTeam(teamRes.data);
+      if (memberRes.data) setLeagues(memberRes.data.map(m => m.leagues as unknown as League).filter(Boolean));
+      setUpcomingMatches((matchesRes.data as Match[]) || []);
+      setStats({
+        rank: profile.global_rank || Math.floor(Math.random() * ((countRes.count as number) || 100)) + 1,
+        predictions: predRes.data?.length || 0
+      });
+    } catch {
+      // Silently handle errors
     }
-
-    const { data: memberData } = await supabase.from('league_members').select('league_id, leagues(*)').eq('user_id', profile.id);
-    if (memberData) setLeagues(memberData.map(m => m.leagues as unknown as League).filter(Boolean));
-
-    const { data: matches } = await supabase.from('matches').select('*, team_a:teams!matches_team_a_id_fkey(*), team_b:teams!matches_team_b_id_fkey(*)').eq('status', 'scheduled').order('kickoff_time').limit(5);
-    setUpcomingMatches((matches as Match[]) || []);
-
-    const { count } = await supabase.from('profiles').select('*', { count: 'exact', head: true });
-    const { data: predData } = await supabase.from('predictions_match').select('id').eq('user_id', profile.id);
-    setStats({ rank: profile.global_rank || Math.floor(Math.random() * ((count as number) || 100)) + 1, predictions: predData?.length || 0 });
 
     setLoading(false);
   };

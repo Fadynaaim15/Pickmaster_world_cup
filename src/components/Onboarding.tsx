@@ -1,6 +1,7 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { useAuth } from '../contexts/AuthContext';
 import { supabase, Team } from '../lib/supabase';
+import { getCached, setCached, CACHE_KEYS } from '../lib/cache';
 import { Trophy, AlertTriangle, Loader2 } from 'lucide-react';
 
 export default function Onboarding() {
@@ -10,15 +11,30 @@ export default function Onboarding() {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [displayName, setDisplayName] = useState('');
+  const dataFetched = useRef(false);
 
   useEffect(() => {
-    const fetchTeams = async () => {
-      const { data } = await supabase.from('teams').select('*').order('name');
-      setTeams(data || []);
-      setLoading(false);
-    };
+    if (dataFetched.current) return;
+    dataFetched.current = true;
     fetchTeams();
   }, []);
+
+  const fetchTeams = async () => {
+    // Check cache first
+    const cachedTeams = getCached<Team[]>(CACHE_KEYS.TEAMS);
+    if (cachedTeams) {
+      setTeams(cachedTeams);
+      setLoading(false);
+      return;
+    }
+
+    const { data } = await supabase.from('teams').select('*').order('name');
+    if (data) {
+      setTeams(data);
+      setCached(CACHE_KEYS.TEAMS, data);
+    }
+    setLoading(false);
+  };
 
   const handleSave = async () => {
     if (!selectedTeam || !user) return;

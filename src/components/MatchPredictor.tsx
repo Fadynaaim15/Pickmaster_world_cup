@@ -1,5 +1,6 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { supabase, Match, MatchPrediction } from '../lib/supabase';
+import { getCached, setCached, CACHE_KEYS } from '../lib/cache';
 import { useAuth } from '../contexts/AuthContext';
 import { Lock, CheckCircle, Loader2, AlertCircle, Timer } from 'lucide-react';
 
@@ -58,16 +59,46 @@ export default function MatchPredictor() {
   const [loading, setLoading] = useState(true);
   const [savingId, setSavingId] = useState<string | null>(null);
   const [message, setMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
+  const dataFetched = useRef(false);
 
   const fetchMatches = useCallback(async () => {
-    const { data: matchData } = await supabase.from('matches').select('*, team_a:teams!matches_team_a_id_fkey(*), team_b:teams!matches_team_b_id_fkey(*)').order('kickoff_time');
-    if (!user || !matchData) { setMatches(matchData || []); setLoading(false); return; }
-    const { data: predictions } = await supabase.from('predictions_match').select('*').eq('user_id', user.id);
-    setMatches(matchData.map(m => ({ ...m, prediction: predictions?.find(p => p.match_id === m.id) })));
-    setLoading(false);
+    // Check cache first for initial load
+    if (!dataFetched.current) {
+      const cachedMatches = getCached<Match[]>(CACHE_KEYS.MATCHES);
+      if (cachedMatches) {
+        setMatches(cachedMatches.map(m => ({ ...m, prediction: undefined })));
+        setLoading(false);
+        dataFetched.current = true;
+        // Still fetch in background to get predictions
+        fetchMatchesBackground();
+        return;
+      }
+    }
+
+    await fetchMatchesBackground();
   }, [user]);
 
-  useEffect(() => { fetchMatches(); const i = setInterval(fetchMatches, 30000); return () => clearInterval(i); }, [fetchMatches]);
+  const fetchMatchesBackground = async () => {
+    const { data: matchData } = await supabase.from('matches').select('*, team_a:teams!matches_team_a_id_fkey(*), team_b:teams!matches_team_b_id_fkey(*)').order('kickoff_time');
+    if (!user || !matchData) {
+      setMatches(matchData || []);
+      if (matchData) setCached(CACHE_KEYS.MATCHES, matchData);
+      setLoading(false);
+      return;
+    }
+    const { data: predictions } = await supabase.from('predictions_match').select('*').eq('user_id', user.id);
+    const matchesWithPreds = matchData.map(m => ({ ...m, prediction: predictions?.find(p => p.match_id === m.id) }));
+    setMatches(matchesWithPreds);
+    setCached(CACHE_KEYS.MATCHES, matchData);
+    setLoading(false);
+    dataFetched.current = true;
+  };
+
+  useEffect(() => {
+    fetchMatches();
+    const i = setInterval(fetchMatches, 60000); // Reduced frequency
+    return () => clearInterval(i);
+  }, [fetchMatches]);
 
   const isLocked = (kickoff: string) => Date.now() > new Date(kickoff).getTime() - LOCK_BUFFER * 60 * 1000;
 

@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { useAuth } from '../contexts/AuthContext';
 import { supabase, League, Profile } from '../lib/supabase';
 import { Trophy, Plus, Copy, LogIn, Check, X, Loader2, Users, Crown } from 'lucide-react';
@@ -14,8 +14,14 @@ export default function Leagues() {
   const [saving, setSaving] = useState(false);
   const [message, setMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
   const [copied, setCopied] = useState<string | null>(null);
+  const dataFetched = useRef(false);
 
-  useEffect(() => { if (user) fetchLeagues(); }, [user]);
+  useEffect(() => {
+    if (user && !dataFetched.current) {
+      dataFetched.current = true;
+      fetchLeagues();
+    }
+  }, [user]);
 
   const fetchLeagues = async () => {
     if (!user) return;

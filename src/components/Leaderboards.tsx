@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { useAuth } from '../contexts/AuthContext';
 import { supabase, Profile, League } from '../lib/supabase';
 import { Trophy, Globe, Users, Crown, Loader2 } from 'lucide-react';
@@ -9,8 +9,14 @@ export default function Leaderboards() {
   const [globalLeaders, setGlobalLeaders] = useState<Profile[]>([]);
   const [leagues, setLeagues] = useState<{ league: League; members: { profile: Profile; points: number }[] }[]>([]);
   const [loading, setLoading] = useState(true);
+  const dataFetched = useRef(false);
 
-  useEffect(() => { if (user) fetchData(); }, [user]);
+  useEffect(() => {
+    if (user && !dataFetched.current) {
+      dataFetched.current = true;
+      fetchData();
+    }
+  }, [user]);
 
   const fetchData = async () => {
     setLoading(true);

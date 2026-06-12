@@ -1,5 +1,6 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { supabase, Team, GroupPrediction, TournamentSettings } from '../lib/supabase';
+import { getCached, setCached, CACHE_KEYS } from '../lib/cache';
 import { useAuth } from '../contexts/AuthContext';
 import { Lock, AlertCircle, Info, Loader2 } from 'lucide-react';
 
@@ -18,18 +19,42 @@ export default function GroupPredictor() {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [message, setMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
+  const dataFetched = useRef(false);
 
   useEffect(() => {
-    const fetchData = async () => {
-      setLoading(true);
-      const { data: teamsData } = await supabase.from('teams').select('*').order('name');
-      setTeams(teamsData || []);
-      const { data: settingsData } = await supabase.from('tournament_settings').select('*').single();
-      setSettings(settingsData);
-      setLoading(false);
-    };
+    if (dataFetched.current) return;
+    dataFetched.current = true;
     fetchData();
   }, []);
+
+  const fetchData = async () => {
+    setLoading(true);
+
+    // Check cache first
+    const cachedTeams = getCached<Team[]>(CACHE_KEYS.TEAMS);
+    const cachedSettings = getCached<TournamentSettings>(CACHE_KEYS.TOURNAMENT_SETTINGS);
+
+    if (cachedTeams && cachedSettings) {
+      setTeams(cachedTeams);
+      setSettings(cachedSettings);
+      setLoading(false);
+      return;
+    }
+
+    const { data: teamsData } = await supabase.from('teams').select('*').order('name');
+    const { data: settingsData } = await supabase.from('tournament_settings').select('*').single();
+
+    if (teamsData) {
+      setTeams(teamsData);
+      setCached(CACHE_KEYS.TEAMS, teamsData);
+    }
+    if (settingsData) {
+      setSettings(settingsData);
+      setCached(CACHE_KEYS.TOURNAMENT_SETTINGS, settingsData);
+    }
+
+    setLoading(false);
+  };
 
   useEffect(() => {
     if (teams.length > 0 && user) fetchPredictions();

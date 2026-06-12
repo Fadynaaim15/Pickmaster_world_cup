@@ -1,6 +1,7 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { useAuth } from '../contexts/AuthContext';
 import { supabase, Match, Team, TournamentSettings, OfficialGroupStanding } from '../lib/supabase';
+import { getCached, setCached, CACHE_KEYS } from '../lib/cache';
 import { Shield, Lock, AlertCircle, CheckCircle, Loader2, RefreshCw, Clock, Edit2 } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 
@@ -20,21 +21,50 @@ export default function Admin() {
   const [editingMatch, setEditingMatch] = useState<string | null>(null);
   const [editTime, setEditTime] = useState<string>('');
   const [message, setMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
+  const dataFetched = useRef(false);
 
-  useEffect(() => { if (profile && !profile.is_admin) { navigate('/dashboard'); return; } fetchData(); }, [profile, navigate]);
+  useEffect(() => {
+    if (profile && !profile.is_admin) {
+      navigate('/dashboard');
+      return;
+    }
+    if (!dataFetched.current) {
+      dataFetched.current = true;
+      fetchData();
+    }
+  }, [profile, navigate]);
 
   const fetchData = async () => {
     setLoading(true);
-    const { data: matchData } = await supabase.from('matches').select('*, team_a:teams!matches_team_a_id_fkey(*), team_b:teams!matches_team_b_id_fkey(*)').order('match_number');
-    setMatches((matchData as Match[]) || []);
-    const { data: teamData } = await supabase.from('teams').select('*');
-    setTeams(teamData || []);
-    const { data: settingsData } = await supabase.from('tournament_settings').select('*').single();
-    setSettings(settingsData);
-    const { data: officialData } = await supabase.from('official_group_standings').select('*');
-    setOfficialStandings(officialData || []);
-    const { data: bestThirdData } = await supabase.from('official_best_third').select('team_id');
-    setOfficialBestThird((bestThirdData || []).map((b: any) => b.team_id));
+
+    // Check cache first for static data
+    const cachedTeams = getCached<Team[]>(CACHE_KEYS.TEAMS);
+    const cachedSettings = getCached<TournamentSettings>(CACHE_KEYS.TOURNAMENT_SETTINGS);
+
+    if (cachedTeams) setTeams(cachedTeams);
+    if (cachedSettings) setSettings(cachedSettings);
+
+    // Fetch all data in parallel
+    const [matchRes, teamRes, settingsRes, officialRes, bestThirdRes] = await Promise.all([
+      supabase.from('matches').select('*, team_a:teams!matches_team_a_id_fkey(*), team_b:teams!matches_team_b_id_fkey(*)').order('match_number'),
+      cachedTeams ? Promise.resolve({ data: cachedTeams }) : supabase.from('teams').select('*'),
+      cachedSettings ? Promise.resolve({ data: cachedSettings }) : supabase.from('tournament_settings').select('*').single(),
+      supabase.from('official_group_standings').select('*'),
+      supabase.from('official_best_third').select('team_id')
+    ]);
+
+    setMatches((matchRes.data as Match[]) || []);
+    if (teamRes.data && !cachedTeams) {
+      setTeams(teamRes.data);
+      setCached(CACHE_KEYS.TEAMS, teamRes.data);
+    }
+    if (settingsRes.data && !cachedSettings) {
+      setSettings(settingsRes.data);
+      setCached(CACHE_KEYS.TOURNAMENT_SETTINGS, settingsRes.data);
+    }
+    setOfficialStandings(officialRes.data || []);
+    setOfficialBestThird((bestThirdRes.data || []).map((b: any) => b.team_id));
+
     setLoading(false);
   };
 

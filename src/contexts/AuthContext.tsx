@@ -1,4 +1,4 @@
-import { createContext, useContext, useEffect, useState, useCallback, ReactNode } from 'react';
+import { createContext, useContext, useEffect, useState, useCallback, ReactNode, useRef } from 'react';
 import { supabase, Profile } from '../lib/supabase';
 import type { User, Session } from '@supabase/supabase-js';
 
@@ -22,6 +22,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [session, setSession] = useState<Session | null>(null);
   const [loading, setLoading] = useState(true);
   const [needsOnboarding, setNeedsOnboarding] = useState(false);
+  const initialized = useRef(false);
 
   const fetchProfile = useCallback(async (userId: string) => {
     const { data, error } = await supabase
@@ -48,18 +49,41 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, [user?.id, fetchProfile]);
 
   useEffect(() => {
-    const { data: { subscription } } = supabase.auth.onAuthStateChange(
-      async (_event, session) => {
-        setSession(session);
-        setUser(session?.user ?? null);
+    // Prevent double initialization
+    if (initialized.current) return;
+    initialized.current = true;
 
-        if (session?.user) {
-          await fetchProfile(session.user.id);
+    const initializeAuth = async () => {
+      try {
+        const { data: { session: initialSession } } = await supabase.auth.getSession();
+
+        if (initialSession?.user) {
+          setSession(initialSession);
+          setUser(initialSession.user);
+          await fetchProfile(initialSession.user.id);
+        }
+        setLoading(false);
+      } catch {
+        setLoading(false);
+      }
+    };
+
+    initializeAuth();
+
+    const { data: { subscription } } = supabase.auth.onAuthStateChange(
+      async (event, newSession) => {
+        // Only handle specific events, not INITIAL_SESSION which we already handled
+        if (event === 'INITIAL_SESSION') return;
+
+        setSession(newSession);
+        setUser(newSession?.user ?? null);
+
+        if (newSession?.user) {
+          await fetchProfile(newSession.user.id);
         } else {
           setProfile(null);
           setNeedsOnboarding(false);
         }
-        setLoading(false);
       }
     );
 
