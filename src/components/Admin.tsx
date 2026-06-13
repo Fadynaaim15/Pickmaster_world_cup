@@ -37,14 +37,12 @@ export default function Admin() {
   const fetchData = async () => {
     setLoading(true);
 
-    // Check cache first for static data
     const cachedTeams = getCached<Team[]>(CACHE_KEYS.TEAMS);
     const cachedSettings = getCached<TournamentSettings>(CACHE_KEYS.TOURNAMENT_SETTINGS);
 
     if (cachedTeams) setTeams(cachedTeams);
     if (cachedSettings) setSettings(cachedSettings);
 
-    // Fetch all data in parallel
     const [matchRes, teamRes, settingsRes, officialRes, bestThirdRes] = await Promise.all([
       supabase.from('matches').select('*, team_a:teams!matches_team_a_id_fkey(*), team_b:teams!matches_team_b_id_fkey(*)').order('match_number'),
       cachedTeams ? Promise.resolve({ data: cachedTeams }) : supabase.from('teams').select('*'),
@@ -117,13 +115,68 @@ export default function Admin() {
     setMessage({ type: 'success', text: `Group stage ${!settings.group_stage_locked ? 'locked' : 'unlocked'}` });
   };
 
+  // 🔥 الكود السحري الجديد لحساب النقط محلياً وبدون سيرفرات خارجية
   const handleCalculateScores = async () => {
     setScoring(true);
     try {
-      await fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/calculate_scores`, { method: 'POST', headers: { 'Authorization': `Bearer ${import.meta.env.VITE_SUPABASE_ANON_KEY}`, 'Content-Type': 'application/json' } });
-      setMessage({ type: 'success', text: 'Scores updated!' });
+      // 1. جلب كل الماتشات المكتملة والتوقعات
+      const { data: allMatches } = await supabase.from('matches').select('*').eq('status', 'completed');
+      const { data: allPredictions } = await supabase.from('predictions').select('*');
+      const { data: allUsers } = await supabase.from('profiles').select('id');
+      const { data: allMembers } = await supabase.from('league_members').select('*');
+
+      if (!allMatches || !allPredictions || !allUsers) {
+        throw new Error("Missing data");
+      }
+
+      // خريطة لتخزين نقط كل مستخدم
+      const userScores: { [userId: string]: number } = {};
+      allUsers.forEach(user => { userScores[user.id] = 0; });
+
+      // 2. حساب النقط بناءً على التوقعات والماتشات الحقيقية
+      allPredictions.forEach(pred => {
+        const match = allMatches.find(m => m.id === pred.match_id);
+        if (!match || !match.result) return;
+
+        if (userScores[pred.user_id] === undefined) {
+          userScores[pred.user_id] = 0;
+        }
+
+        // النتيجة بالظبط (3 نقط)
+        if (pred.team_a_score === match.team_a_score && pred.team_b_score === match.team_b_score) {
+          userScores[pred.user_id] += 3;
+        } 
+        // الاتجاه صح بس الأهداف مختلفة (نقطة واحدة)
+        else if (pred.predicted_result === match.result) {
+          userScores[pred.user_id] += 1;
+        }
+      });
+
+      // 3. تحديث جدول الـ Profiles في الداتابيز لكل يوزر
+      for (const userId of Object.keys(userScores)) {
+        await supabase
+          .from('profiles')
+          .update({ total_points: userScores[userId] })
+          .eq('id', userId);
+      }
+
+      // 4. تحديث جدول الـ league_members عشان الـ Leaderboard يتظبط
+      if (allMembers && allMembers.length > 0) {
+        for (const member of allMembers) {
+          const currentPoints = userScores[member.user_id] || 0;
+          await supabase
+            .from('league_members')
+            .update({ points: currentPoints })
+            .eq('id', member.id);
+        }
+      }
+
+      setMessage({ type: 'success', text: 'Scores and Leaderboards calculated successfully!' });
       await fetchData();
-    } catch { setMessage({ type: 'error', text: 'Failed' }); }
+    } catch (error) {
+      console.error(error);
+      setMessage({ type: 'error', text: 'Failed to calculate scores. Check database rules.' });
+    }
     setScoring(false);
   };
 
