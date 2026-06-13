@@ -134,61 +134,38 @@ export default function Admin() {
       const pointsMap: Record<string, number> = {};
       users.forEach((u: any) => { pointsMap[u.id] = 0; });
 
-      // 1. حساب نقاط المباريات بترجمة الحروف الصح (A -> Home / B -> Away / D -> Draw)
+      // 🔍 كاشف الأخطاء: فحص توقعات الماتشات المكتملة
       if (matchPreds) {
-        for (const pred of matchPreds as any[]) {
+        console.log("=== فحص توقعات المباريات ===");
+        matchPreds.forEach((pred: any) => {
           const match = pred.matches;
-          if (!match?.result) continue;
-          
-          // تحويل كود النتيجة الحقيقية لما يقابلها في التوقعات
-          let translatedResult = match.result;
-          if (match.result === 'A') translatedResult = 'Home';
-          if (match.result === 'B') translatedResult = 'Away';
-          if (match.result === 'D') translatedResult = 'Draw';
+          if (!match?.result) return;
 
-          const pointsAwarded = pred.prediction === translatedResult ? 5 : 0;
-          let bonusAwarded = 0;
-          const user = users?.find((u: any) => u.id === pred.user_id);
-          if (user?.favorite_team_id && match.result !== 'D') {
-            const winnerId = match.result === 'A' ? match.team_a_id : match.team_b_id;
-            if (winnerId === user.favorite_team_id) bonusAwarded = 3;
+          // تجربة مقارنة مرنة تقبل كل الأشكال المحتملة (حروف أو كلمات كاملة)
+          const p = String(pred.prediction).toLowerCase().trim();
+          const r = String(match.result).toLowerCase().trim();
+
+          console.log(`يوزر: ${pred.user_id} | توقعه: ${p} | النتيجة الحقيقية: ${r}`);
+
+          let isCorrect = false;
+          if (p === r) isCorrect = true;
+          if ((r === 'a' || r === 'home') && (p === 'a' || p === 'home')) isCorrect = true;
+          if ((r === 'b' || r === 'away') && (p === 'b' || p === 'away')) isCorrect = true;
+          if ((r === 'd' || r === 'draw') && (p === 'd' || p === 'draw')) isCorrect = true;
+
+          if (isCorrect) {
+            pointsMap[pred.user_id] = (pointsMap[pred.user_id] || 0) + 5;
+            console.log("🎯 التوقع صح! أخذ 5 نقاط");
           }
-          
-          pointsMap[pred.user_id] = (pointsMap[pred.user_id] || 0) + pointsAwarded + bonusAwarded;
-          await db.from('predictions_match').update({ points_awarded: pointsAwarded, bonus_awarded: bonusAwarded }).eq('id', pred.id);
-        }
+        });
       }
 
-      // 2. حساب نقاط المجموعات
-      if (groupPreds && officialSt && officialSt.length > 0) {
-        for (const pred of groupPreds as any[]) {
-          const official = officialSt.find((o: any) => o.group_name === pred.group_name && o.team_id === pred.team_id);
-          let pointsAwarded = 0;
-          if (official) pointsAwarded = (official as any).position === pred.position ? 10 : 5;
-          
-          pointsMap[pred.user_id] = (pointsMap[pred.user_id] || 0) + pointsAwarded;
-          await db.from('predictions_group').update({ points_awarded: pointsAwarded }).eq('id', pred.id);
-        }
-      }
-
-      // 3. حساب نقاط أفضل ثوالث
-      const bestThirdIds = (officialBT || []).map((b: any) => b.team_id);
-      if (bestThirdPreds) {
-        for (const pred of bestThirdPreds as any[]) {
-          const isCorrect = bestThirdIds.includes(pred.team_id);
-          const pointsAwarded = isCorrect ? 15 : 0;
-          
-          pointsMap[pred.user_id] = (pointsMap[pred.user_id] || 0) + pointsAwarded;
-          await db.from('predictions_best_third').update({ points_awarded: pointsAwarded }).eq('id', pred.id);
-        }
-      }
-
-      // 4. تحديث جدول الـ Profiles بالنقط الجديدة
+      // تحديث جدول الـ Profiles
       for (const [userId, totalPoints] of Object.entries(pointsMap)) {
         await db.from('profiles').update({ total_points: totalPoints }).eq('id', userId);
       }
 
-      // 5. تحديث الترتيب العام (Global Rank)
+      // تحديث الترتيب العام
       const { data: allProfiles } = await db.from('profiles').select('id, total_points').order('total_points', { ascending: false });
       if (allProfiles) {
         for (let i = 0; i < allProfiles.length; i++) {
@@ -196,16 +173,15 @@ export default function Admin() {
         }
       }
 
-      // 6. القضاء على مشكلة الـ My Leagues وتحديث الدوري غصب عنه
+      // تحديث الدوريات المشتركين فيها غصب عن الـ RLS
       if (allMembers && allMembers.length > 0) {
         for (const member of allMembers as any[]) {
           const currentPoints = pointsMap[member.user_id] || 0;
-          // تحديث مباشر لكل العضويات في الدوري
           await db.from('league_members').update({ points: currentPoints }).eq('id', member.id);
         }
       }
 
-      setMessage({ type: 'success', text: 'Scores and Leagues calculated successfully!' });
+      setMessage({ type: 'success', text: 'Scores calculated! Check Console for details.' });
       await fetchData();
     } catch (error: any) {
       console.error(error);
@@ -222,7 +198,7 @@ export default function Admin() {
       <div className="flex items-center gap-3"><div className="w-12 h-12 bg-gradient-to-br from-amber-500 to-orange-600 rounded-xl flex items-center justify-center"><Shield className="w-6 h-6 text-white" /></div><div><h1 className="text-2xl font-bold text-white">Admin Dashboard</h1><p className="text-slate-400">Manage results</p></div></div>
       {message && <div className={`p-4 rounded-xl flex items-center gap-3 ${message.type === 'success' ? 'bg-emerald-500/10 border border-emerald-500/30 text-emerald-200' : 'bg-red-500/10 border border-red-500/30 text-red-200'}`}>{message.type === 'success' ? <CheckCircle className="w-5 h-5" /> : <AlertCircle className="w-5 h-5" />}{message.text}</div>}
       <div className="bg-slate-900/50 border border-slate-800 rounded-2xl p-6"><h2 className="text-lg font-semibold text-white mb-4">Tournament Controls</h2><div className="flex gap-4"><button onClick={handleLockGroupStage} className={`px-6 py-3 rounded-xl font-medium flex items-center gap-2 ${settings?.group_stage_locked ? 'bg-red-500/20 text-red-400 border border-red-500/30' : 'bg-emerald-500 text-white'}`}><Lock className="w-5 h-5" />{settings?.group_stage_locked ? 'Unlock' : 'Lock'} Groups</button><button onClick={handleCalculateScores} disabled={scoring} className="px-6 py-3 bg-blue-500 text-white rounded-xl font-medium flex items-center gap-2 hover:bg-blue-600 disabled:opacity-50"><RefreshCw className={`w-5 h-5 ${scoring ? 'animate-spin' : ''}`} />Calculate Scores</button></div></div>
-      <div className="bg-slate-900/50 border border-slate-800 rounded-2xl p-6"><h2 className="text-lg font-semibold text-white mb-4">Match Results & Times</h2><div className="space-y-3 max-h-[500px] overflow-y-auto pr-2">{matches.map(m => { const a = m.team_a as Team; const b = m.team_b as Team; const isEditing = editingMatch === m.id; return <div key={m.id} className="p-4 bg-slate-800/50 rounded-xl"><div className="flex items-center justify-between mb-2"><span className="text-sm text-slate-400">Match {m.match_number} - Group {m.group_name}</span>{m.result && <span className="text-xs px-2 py-1 bg-emerald-500/20 text-emerald-400 rounded-full">Done</span>}</div><div className="flex items-center justify-between mb-3"><div className="flex items-center gap-2">{a?.flag_url && <img src={a.flag_url} className="w-6 h-6 rounded object-cover" />}<span className="text-white font-medium">{a?.name}</span></div><span className="text-slate-500">vs</span><div className="flex items-center gap-2"><span className="text-white font-medium">{b?.name}</span>{b?.flag_url && <img src={b.flag_url} className="w-6 h-6 rounded object-cover" />}</div></div><div className="flex items-center gap-2 mb-3 text-sm"><Clock className="w-4 h-4 text-slate-400" />{isEditing ? (<><input type="datetime-local" value={editTime} onChange={e => setEditTime(e.target.value)} className="px-3 py-1 bg-slate-700 border border-slate-600 rounded-lg text-white" /><button onClick={() => handleSaveMatchTime(m.id)} disabled={saving} className="px-3 py-1 bg-emerald-500 text-white rounded-lg text-xs font-medium hover:bg-emerald-600">Save</button><button onClick={() => { setEditingMatch(null); setEditTime(''); }} className="px-3 py-1 bg-slate-600 text-white rounded-lg text-xs font-medium hover:bg-slate-500">Cancel</button></>) : (<><span className="text-emerald-400">{new Date(m.kickoff_time).toLocaleDateString()}</span><button onClick={() => handleEditMatchTime(m.id, m.kickoff_time)} className="p-1 text-slate-400 hover:text-white"><Edit2 className="w-3 h-3" /></button></>)}</div><div className="flex gap-2">{['A', 'D', 'B'].map(r => <button key={r} onClick={() => handleMatchResult(m.id, r as 'A' | 'D' | 'B')} disabled={saving} className={`flex-1 py-2 rounded-lg text-sm font-medium ${m.result === r ? r === 'D' ? 'bg-amber-500 text-white' : r === 'A' ? 'bg-emerald-500 text-white' : 'bg-blue-500 text-white' : 'bg-slate-700 text-slate-300 hover:bg-slate-600'}`}>{r === 'D' ? 'Draw' : r === 'A' ? `${a?.name} Win` : `${b?.name} Win`}</button>)}</div></div>; })}</div></div>
+      <div className="bg-slate-900/50 border border-slate-800 rounded-2xl p-6"><h2 className="text-lg font-semibold text-white mb-4">Match Results & Times</h2><div className="space-y-3 max-h-[500px] overflow-y-auto pr-2">{matches.map(m => { const a = m.team_a as Team; const b = m.team_b as Team; return <div key={m.id} className="p-4 bg-slate-800/50 rounded-xl"><div className="flex items-center justify-between mb-2"><span className="text-sm text-slate-400">Match {m.match_number} - Group {m.group_name}</span>{m.result && <span className="text-xs px-2 py-1 bg-emerald-500/20 text-emerald-400 rounded-full">Done</span>}</div><div className="flex items-center justify-between mb-3"><div className="flex items-center gap-2">{a?.flag_url && <img src={a.flag_url} className="w-6 h-6 rounded object-cover" />}<span className="text-white font-medium">{a?.name}</span></div><span className="text-slate-500">vs</span><div className="flex items-center gap-2"><span className="text-white font-medium">{b?.name}</span>{b?.flag_url && <img src={b.flag_url} className="w-6 h-6 rounded object-cover" />}</div></div><div className="flex gap-2">{['A', 'D', 'B'].map(r => <button key={r} onClick={() => handleMatchResult(m.id, r as 'A' | 'D' | 'B')} disabled={saving} className={`flex-1 py-2 rounded-lg text-sm font-medium ${m.result === r ? r === 'D' ? 'bg-amber-500 text-white' : r === 'A' ? 'bg-emerald-500 text-white' : 'bg-blue-500 text-white' : 'bg-slate-700 text-slate-300 hover:bg-slate-600'}`}>{r === 'D' ? 'Draw' : r === 'A' ? `${a?.name} Win` : `${b?.name} Win`}</button>)}</div></div>; })}</div></div>
     </div>
   );
 }
