@@ -62,28 +62,26 @@ export default function Admin() {
     }
     setOfficialStandings(officialRes.data || []);
     setOfficialBestThird((bestThirdRes.data || []).map((b: any) => b.team_id));
-    setLoading(false);
+    loading && setLoading(false);
   };
 
   const handleMatchResult = async (matchId: string, result: 'A' | 'D' | 'B') => {
     setSaving(true);
     await (supabase as any).from('matches').update({ result, status: 'completed', team_a_score: result === 'A' ? 1 : result === 'B' ? 0 : 1, team_b_score: result === 'B' ? 1 : result === 'A' ? 0 : 1 }).eq('id', matchId);
     await fetchData();
-    setMessage({ type: 'success', text: 'Updated' });
+    setMessage({ type: 'success', text: 'Result Updated' });
     setSaving(false);
   };
 
   const handleEditMatchTime = (matchId: string, currentTime: string) => {
-    const localTime = new Date(currentTime).toISOString().slice(0, 16);
-    setEditTime(localTime);
+    setEditTime(new Date(currentTime).toISOString().slice(0, 16));
     setEditingMatch(matchId);
   };
 
   const handleSaveMatchTime = async (matchId: string) => {
     if (!editTime) return;
     setSaving(true);
-    const utcTime = new Date(editTime + ':00Z').toISOString();
-    await (supabase as any).from('matches').update({ kickoff_time: utcTime }).eq('id', matchId);
+    await (supabase as any).from('matches').update({ kickoff_time: new Date(editTime + ':00Z').toISOString() }).eq('id', matchId);
     setEditingMatch(null);
     setEditTime('');
     await fetchData();
@@ -121,31 +119,28 @@ export default function Admin() {
     try {
       const db = supabase as any;
 
+      // جلب البيانات الأساسية
       const { data: users } = await db.from('profiles').select('id, favorite_team_id');
       const { data: matchPreds } = await db.from('predictions_match').select('id, user_id, prediction, matches!inner(id, result, team_a_id, team_b_id)');
       const { data: officialSt } = await db.from('official_group_standings').select('*');
       const { data: groupPreds } = await db.from('predictions_group').select('*');
       const { data: officialBT } = await db.from('official_best_third').select('team_id');
       const { data: bestThirdPreds } = await db.from('predictions_best_third').select('*');
-      const { data: allMembers } = await db.from('league_members').select('*');
 
       if (!users) throw new Error("Missing users data");
 
+      // خريطة لتجميع نقاط كل يوزر
       const pointsMap: Record<string, number> = {};
       users.forEach((u: any) => { pointsMap[u.id] = 0; });
 
-      // 🔍 كاشف الأخطاء: فحص توقعات الماتشات المكتملة
+      // 1. حساب نقاط توقعات المباريات المكتملة
       if (matchPreds) {
-        console.log("=== فحص توقعات المباريات ===");
-        matchPreds.forEach((pred: any) => {
+        for (const pred of matchPreds as any[]) {
           const match = pred.matches;
-          if (!match?.result) return;
+          if (!match?.result) continue;
 
-          // تجربة مقارنة مرنة تقبل كل الأشكال المحتملة (حروف أو كلمات كاملة)
           const p = String(pred.prediction).toLowerCase().trim();
           const r = String(match.result).toLowerCase().trim();
-
-          console.log(`يوزر: ${pred.user_id} | توقعه: ${p} | النتيجة الحقيقية: ${r}`);
 
           let isCorrect = false;
           if (p === r) isCorrect = true;
@@ -153,19 +148,50 @@ export default function Admin() {
           if ((r === 'b' || r === 'away') && (p === 'b' || p === 'away')) isCorrect = true;
           if ((r === 'd' || r === 'draw') && (p === 'd' || p === 'draw')) isCorrect = true;
 
-          if (isCorrect) {
-            pointsMap[pred.user_id] = (pointsMap[pred.user_id] || 0) + 5;
-            console.log("🎯 التوقع صح! أخذ 5 نقاط");
+          const pointsAwarded = isCorrect ? 5 : 0;
+          let bonusAwarded = 0;
+
+          const user = users.find((u: any) => u.id === pred.user_id);
+          if (user?.favorite_team_id && match.result !== 'D') {
+            const winnerId = match.result === 'A' ? match.team_a_id : match.team_b_id;
+            if (winnerId === user.favorite_team_id) bonusAwarded = 3;
           }
-        });
+
+          pointsMap[pred.user_id] = (pointsMap[pred.user_id] || 0) + pointsAwarded + bonusAwarded;
+          await db.from('predictions_match').update({ points_awarded: pointsAwarded, bonus_awarded: bonusAwarded }).eq('id', pred.id);
+        }
       }
 
-      // تحديث جدول الـ Profiles
+      // 2. حساب نقاط المجموعات
+      if (groupPreds && officialSt && officialSt.length > 0) {
+        for (const pred of groupPreds as any[]) {
+          const official = officialSt.find((o: any) => o.group_name === pred.group_name && o.team_id === pred.team_id);
+          let pointsAwarded = 0;
+          if (official) {
+            pointsAwarded = (official as any).position === pred.position ? 10 : 5;
+          }
+          pointsMap[pred.user_id] = (pointsMap[pred.user_id] || 0) + pointsAwarded;
+          await db.from('predictions_group').update({ points_awarded: pointsAwarded }).eq('id', pred.id);
+        }
+      }
+
+      // 3. حساب نقاط أفضل ثوالث
+      const bestThirdIds = (officialBT || []).map((b: any) => b.team_id);
+      if (bestThirdPreds) {
+        for (const pred of bestThirdPreds as any[]) {
+          const isCorrect = bestThirdIds.includes(pred.team_id);
+          const pointsAwarded = isCorrect ? 15 : 0;
+          pointsMap[pred.user_id] = (pointsMap[pred.user_id] || 0) + pointsAwarded;
+          await db.from('predictions_best_third').update({ points_awarded: pointsAwarded }).eq('id', pred.id);
+        }
+      }
+
+      // 4. تحديث جدول الـ Profiles بالنقط النهائية لكل الناس
       for (const [userId, totalPoints] of Object.entries(pointsMap)) {
         await db.from('profiles').update({ total_points: totalPoints }).eq('id', userId);
       }
 
-      // تحديث الترتيب العام
+      // 5. إعادة حساب الرانك العام بشكل صحيح تنازلياً
       const { data: allProfiles } = await db.from('profiles').select('id, total_points').order('total_points', { ascending: false });
       if (allProfiles) {
         for (let i = 0; i < allProfiles.length; i++) {
@@ -173,15 +199,13 @@ export default function Admin() {
         }
       }
 
-      // تحديث الدوريات المشتركين فيها غصب عن الـ RLS
-      if (allMembers && allMembers.length > 0) {
-        for (const member of allMembers as any[]) {
-          const currentPoints = pointsMap[member.user_id] || 0;
-          await db.from('league_members').update({ points: currentPoints }).eq('id', member.id);
-        }
+      // 6. التحديث السحري للدوريات (My Leagues)
+      // بنحدث برضه بـ user_id عشان نضمن التعديل في جدول العضويات
+      for (const [userId, totalPoints] of Object.entries(pointsMap)) {
+        await db.from('league_members').update({ points: totalPoints }).eq('user_id', userId);
       }
 
-      setMessage({ type: 'success', text: 'Scores calculated! Check Console for details.' });
+      setMessage({ type: 'success', text: 'All points and leagues synchronized successfully!' });
       await fetchData();
     } catch (error: any) {
       console.error(error);
